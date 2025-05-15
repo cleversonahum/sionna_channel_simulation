@@ -1,7 +1,9 @@
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+if os.getenv("CUDA_VISIBLE_DEVICES") is None:
+    gpu_num = 0  # Use "" to use the CPU
+    os.environ["CUDA_VISIBLE_DEVICES"] = f"{gpu_num}"
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -24,15 +26,15 @@ num_ut = 10
 num_bs = 1
 num_bs_ant = 16  # Must be a perfect square
 num_ut_ant = 1
-number_rbs = 132
-subcarrier_spacing = 120e3
-carrier_frequency = 28e9  # Carrier frequency in Hz.
+number_rbs = 528
+subcarrier_spacing = 15e3
+carrier_frequency = 3.7e9  # Carrier frequency in Hz.
 num_ofdm_symbols = 14
 subcarriers_per_rb = 12
 precoding_technique = (
     "mrt"  # "mrt" = Maximum Ratio Transmission and "none" = equal power allocation
 )
-p_tx = 1.0  # Watts
+p_tx = 40.0  # Watts
 n0 = 1e-9  # Noise power spectral density
 batch_size = 10
 time_steps_per_batch = 2
