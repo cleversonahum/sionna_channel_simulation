@@ -36,8 +36,9 @@ precoding_technique = (
 )
 p_tx = 40.0  # Watts
 n0 = 1e-9  # Noise power spectral density
-batch_size = 10
-time_steps_per_batch = 2
+batch_size = 5
+time_steps_per_batch = 1
+num_episodes = 5  # Number of episodes to simulate (each episode contains bath_size*time_steps_per_batch time steps)
 ues_velocity = 5  # m/s
 num_streams_per_tx = num_ut_ant
 rx_tx_association = np.ones((num_bs, num_ut))
@@ -85,77 +86,96 @@ channel_model = UMa(
     bs_array=bs_array,
     direction="downlink",
 )
+topology = None  # Initialize topology variable
+for episode in range(num_episodes):
+    if topology is None:
+        # Set topology in the first iteration
+        topology = gen_single_sector_topology(
+            batch_size=batch_size,
+            num_ut=num_ut,
+            scenario="uma",
+            min_ut_velocity=ues_velocity,
+            max_ut_velocity=ues_velocity,
+            indoor_probability=0.0,
+        )
+    else:
+        # Update topology in subsequent iterations
+        initial_pos_uts = topology[0][-1]
+        topology = gen_single_sector_topology(
+            batch_size=batch_size,
+            num_ut=num_ut,
+            scenario="uma",
+            min_ut_velocity=ues_velocity,
+            max_ut_velocity=ues_velocity,
+            indoor_probability=0.0,
+        )
+        curr_pos_uts_first = topology[0][-1]
+        # Update only the UT positions in the topology tuple
+        updated_ut_positions = topology[0] - curr_pos_uts_first + initial_pos_uts
+        topology_list = list(topology)
+        topology_list[0] = updated_ut_positions
+        topology = tuple(topology_list)
+    channel_model.set_topology(*topology)
 
-# Set topology
-topology = gen_single_sector_topology(
-    batch_size=batch_size,
-    num_ut=num_ut,
-    scenario="uma",
-    min_ut_velocity=ues_velocity,
-    max_ut_velocity=ues_velocity,
-    indoor_probability=0.0,
-)
-channel_model.set_topology(*topology)
-
-a, tau, *_ = channel_model(
-    num_time_samples=time_steps_per_batch,
-    sampling_frequency=1 / rg.ofdm_symbol_duration,
-)
-frequencies = subcarrier_frequencies(
-    subcarriers_per_rb * number_rbs, rg.subcarrier_spacing
-)
-h_freq = cir_to_ofdm_channel(frequencies, a, tau, normalize=True)
-
-
-if precoding_technique == "mrt":  # Maximal Ratio Transmission
-    channel_norms = tf.sqrt(tf.reduce_sum(tf.pow(tf.abs(h_freq), 2), 4))
-    snr = (
-        tf.pow(channel_norms, 2)
-        * p_tx
-        / (n0 * subcarriers_per_rb * number_rbs * rg.subcarrier_spacing)
+    a, tau, *_ = channel_model(
+        num_time_samples=time_steps_per_batch,
+        sampling_frequency=1 / rg.ofdm_symbol_duration,
     )
-elif precoding_technique == "none":  # Equal power allocation
-    snr = tf.reduce_sum(
-        tf.pow(tf.abs(h_freq), 2)
-        * (p_tx / num_bs_ant)
-        / (n0 * subcarriers_per_rb * number_rbs * rg.subcarrier_spacing),
-        4,
+    frequencies = subcarrier_frequencies(
+        subcarriers_per_rb * number_rbs, rg.subcarrier_spacing
     )
-else:
-    raise ValueError("Invalid precoding technique. Choose either 'mrt' or 'none'.")
-avg_snr_rb = tf.reduce_mean(
-    tf.reshape(
-        snr,
-        (
-            batch_size,
-            num_ut,
-            num_ut_ant,
-            num_bs,
-            time_steps_per_batch,
-            number_rbs,
-            subcarriers_per_rb,
+    h_freq = cir_to_ofdm_channel(frequencies, a, tau, normalize=True)
+
+    if precoding_technique == "mrt":  # Maximal Ratio Transmission
+        channel_norms = tf.sqrt(tf.reduce_sum(tf.pow(tf.abs(h_freq), 2), 4))
+        snr = (
+            tf.pow(channel_norms, 2)
+            * p_tx
+            / (n0 * subcarriers_per_rb * number_rbs * rg.subcarrier_spacing)
+        )
+    elif precoding_technique == "none":  # Equal power allocation
+        snr = tf.reduce_sum(
+            tf.pow(tf.abs(h_freq), 2)
+            * (p_tx / num_bs_ant)
+            / (n0 * subcarriers_per_rb * number_rbs * rg.subcarrier_spacing),
+            4,
+        )
+    else:
+        raise ValueError("Invalid precoding technique. Choose either 'mrt' or 'none'.")
+    avg_snr_rb = tf.reduce_mean(
+        tf.reshape(
+            snr,
+            (
+                batch_size,
+                num_ut,
+                num_ut_ant,
+                num_bs,
+                time_steps_per_batch,
+                number_rbs,
+                subcarriers_per_rb,
+            ),
         ),
-    ),
-    axis=-1,
-)
-avg_se_rb = np.log2(1 + avg_snr_rb)
-
-if plot_ue_se:  # Plot UE SE per RB for the first batch and num_time_steps element
-    plt.figure()
-    for ue in range(num_ut):
-        plt.plot(avg_se_rb[0, ue, 0, 0, 0, :], label=f"UE {ue+1}")
-    plt.grid()
-    plt.legend()
-    plt.show()
-    print(
-        f"Average achievable throughput per UE (Mbps): {np.mean(avg_se_rb[0, :, 0, 0, 0, :], axis=-1) * subcarriers_per_rb * number_rbs * subcarrier_spacing / 1e6}"
+        axis=-1,
     )
-if write_to_file:  # Write the results to a file
-    for ue in range(num_ut):
-        with open(f"channel_files/ue_{ue+1}_se.csv", "w") as file:
-            for batch_idx in range(batch_size):
-                for time_step in range(time_steps_per_batch):
-                    writer = csv.writer(file)
-                    writer.writerow(
-                        avg_se_rb[batch_idx, ue, 0, 0, time_step, :]
-                    )  # Write the entire list as a single row
+    avg_se_rb = np.log2(1 + avg_snr_rb)
+
+    if plot_ue_se:  # Plot UE SE per RB for the first batch and num_time_steps element
+        plt.figure()
+        for ue in range(num_ut):
+            plt.plot(avg_se_rb[0, ue, 0, 0, 0, :], label=f"UE {ue+1}")
+        plt.grid()
+        plt.legend()
+        plt.show()
+        print(
+            f"Average achievable throughput per UE (Mbps): {np.mean(avg_se_rb[0, :, 0, 0, 0, :], axis=-1) * subcarriers_per_rb * number_rbs * subcarrier_spacing / 1e6}"
+        )
+    if write_to_file:  # Write the results to a file
+        file_mode = "w" if episode == 0 else "a"
+        for ue in range(num_ut):
+            with open(f"channel_files/ue_{ue+1}_se.csv", file_mode) as file:
+                for batch_idx in range(batch_size):
+                    for time_step in range(time_steps_per_batch):
+                        writer = csv.writer(file)
+                        writer.writerow(
+                            avg_se_rb[batch_idx, ue, 0, 0, time_step, :]
+                        )  # Write the entire list as a single row
