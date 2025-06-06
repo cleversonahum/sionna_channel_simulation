@@ -19,10 +19,13 @@ from sionna.phy.channel import (
     subcarrier_frequencies,
     cir_to_ofdm_channel,
 )
-from sionna.phy.channel import gen_single_sector_topology
+from utils import gen_custom_topology, plot_ut_trajectories
+
 
 sionna.phy.config.seed = 40
-num_ut = 10
+plot_ue_se = False  # Plot UE SE per RB for the first batch and num_time_steps element
+write_to_file = True  # Write the results to a file
+num_ut = 2
 num_bs = 1
 num_bs_ant = 16  # Must be a perfect square
 num_ut_ant = 1
@@ -36,37 +39,22 @@ precoding_technique = (
 )
 p_tx = 40.0  # Watts
 n0 = 1e-9  # Noise power spectral density
-batch_size = 5
+batch_size = 10
 time_steps_per_batch = 1
 num_episodes = 5  # Number of episodes to simulate (each episode contains bath_size*time_steps_per_batch time steps)
 ues_velocity = 5  # m/s
 num_streams_per_tx = num_ut_ant
+min_bs_ut_dis = 100  # Meters
+max_bs_ut_dis = 300  # Meters
+bs_height = 25.0  # Meters
 rx_tx_association = np.ones((num_bs, num_ut))
-plot_ue_se = False  # Plot UE SE per RB for the first batch and num_time_steps element
-write_to_file = True  # Write the results to a file
-
-sm = StreamManagement(rx_tx_association, num_streams_per_tx)
-
-rg = ResourceGrid(
-    num_ofdm_symbols=num_ofdm_symbols,
-    fft_size=subcarriers_per_rb * number_rbs,
-    subcarrier_spacing=subcarrier_spacing,
-    num_tx=num_bs,
-    num_streams_per_tx=num_streams_per_tx,
-    cyclic_prefix_length=6,
-    num_guard_carriers=[5, 6],
-    dc_null=True,
-    pilot_pattern="kronecker",
-    pilot_ofdm_symbol_indices=[2, 11],
-)
-
 
 bs_array = PanelArray(
     num_rows_per_panel=int(np.sqrt(num_bs_ant)),
     num_cols_per_panel=int(np.sqrt(num_bs_ant)),
     polarization="single",
     polarization_type="V",
-    antenna_pattern="38.901",
+    antenna_pattern="omni",
     carrier_frequency=carrier_frequency,
 )
 
@@ -87,10 +75,12 @@ channel_model = UMa(
     direction="downlink",
 )
 topology = None  # Initialize topology variable
+all_uts_pos = []
+all_uts_indoor = []
 for episode in range(num_episodes):
     if topology is None:
         # Set topology in the first iteration
-        topology = gen_single_sector_topology(
+        topology = gen_custom_topology(
             batch_size=batch_size,
             num_ut=num_ut,
             scenario="uma",
@@ -101,7 +91,7 @@ for episode in range(num_episodes):
     else:
         # Update topology in subsequent iterations
         initial_pos_uts = topology[0][-1]
-        topology = gen_single_sector_topology(
+        topology = gen_custom_topology(
             batch_size=batch_size,
             num_ut=num_ut,
             scenario="uma",
@@ -116,13 +106,14 @@ for episode in range(num_episodes):
         topology_list[0] = updated_ut_positions
         topology = tuple(topology_list)
     channel_model.set_topology(*topology)
-
+    all_uts_pos.append(topology[0])
+    all_uts_indoor.append(topology[5])
     a, tau, *_ = channel_model(
         num_time_samples=time_steps_per_batch,
-        sampling_frequency=1 / rg.ofdm_symbol_duration,
+        sampling_frequency=subcarrier_spacing,
     )
     frequencies = subcarrier_frequencies(
-        subcarriers_per_rb * number_rbs, rg.subcarrier_spacing
+        subcarriers_per_rb * number_rbs, subcarrier_spacing
     )
     h_freq = cir_to_ofdm_channel(frequencies, a, tau, normalize=True)
 
@@ -131,13 +122,13 @@ for episode in range(num_episodes):
         snr = (
             tf.pow(channel_norms, 2)
             * p_tx
-            / (n0 * subcarriers_per_rb * number_rbs * rg.subcarrier_spacing)
+            / (n0 * subcarriers_per_rb * number_rbs * subcarrier_spacing)
         )
     elif precoding_technique == "none":  # Equal power allocation
         snr = tf.reduce_sum(
             tf.pow(tf.abs(h_freq), 2)
             * (p_tx / num_bs_ant)
-            / (n0 * subcarriers_per_rb * number_rbs * rg.subcarrier_spacing),
+            / (n0 * subcarriers_per_rb * number_rbs * subcarrier_spacing),
             4,
         )
     else:
@@ -179,3 +170,6 @@ for episode in range(num_episodes):
                         writer.writerow(
                             avg_se_rb[batch_idx, ue, 0, 0, time_step, :]
                         )  # Write the entire list as a single row
+plot_ut_trajectories(
+    all_uts_pos, all_uts_indoor, np.zeros(2), bs_height, min_bs_ut_dis, max_bs_ut_dis
+)
