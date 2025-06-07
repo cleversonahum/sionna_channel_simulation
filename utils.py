@@ -67,6 +67,147 @@ def gen_custom_topology(
     return ut_loc, bs_loc, ut_orientations, bs_orientation, ut_velocities, in_state
 
 
+# def generate_ut_trajectories(
+#     batch_size: int,
+#     num_ut: int,
+#     cell_loc_xy: np.ndarray,
+#     min_bs_ut_dist: float,
+#     max_bs_ut_dist: float,
+#     min_ut_height: float,
+#     max_ut_height: float,
+#     indoor_probability: float,
+#     min_ut_velocity: float,
+#     max_ut_velocity: float,
+#     time_between_batches: float,
+#     precision: str = "float32",
+#     initial_ut_loc: np.ndarray = None,
+# ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+#     """
+#     Generate UT trajectories across multiple batches with specified constraints.
+
+#     Args:
+#         batch_size: Number of batches (time steps)
+#         num_ut: Number of UTs
+#         cell_loc_xy: BS location [x, y] (meters)
+#         min_bs_ut_dist: Minimum distance from BS (meters)
+#         max_bs_ut_dist: Maximum distance from BS (meters)
+#         min_ut_height: Minimum UT height (meters)
+#         max_ut_height: Maximum UT height (meters)
+#         indoor_probability: Probability of UT being indoor [0,1]
+#         min_ut_velocity: Minimum UT velocity (m/s)
+#         max_ut_velocity: Maximum UT velocity (m/s)
+#         time_between_batches: Time between batches (seconds)
+#         precision: Numerical precision ('float32' or 'float64')
+
+#     Returns:
+#         ut_loc: UT locations [batch_size, num_ut, 3] (x,y,z)
+#         ut_orientations: UT orientations [batch_size, num_ut, 3] (yaw,pitch,roll)
+#         ut_velocities: UT velocities [batch_size, num_ut, 3] (vx,vy,vz)
+#         in_state: Indoor state [batch_size, num_ut] (bool)
+#     """
+#     # Convert inputs to tensor with specified precision
+#     dtype = tf.float32 if precision == "float32" else tf.float64
+#     cell_loc = tf.constant([cell_loc_xy[0], cell_loc_xy[1], 0.0], dtype=dtype)
+
+#     # Initialize arrays
+#     ut_loc = tf.TensorArray(dtype, size=batch_size)
+#     ut_orientations = tf.TensorArray(dtype, size=batch_size)
+#     ut_velocities = tf.TensorArray(dtype, size=batch_size)
+#     in_state = tf.TensorArray(tf.bool, size=batch_size)
+
+#     # Generate initial positions
+#     angles = tf.random.uniform([num_ut], 0, 2 * np.pi, dtype=dtype)
+#     distances = tf.random.uniform([num_ut], min_bs_ut_dist, max_bs_ut_dist, dtype=dtype)
+
+#     # Initial positions (x,y)
+#     xy = (
+#         tf.stack([distances * tf.cos(angles), distances * tf.sin(angles)], axis=1)
+#         + cell_loc_xy
+#     )
+
+#     # Initial heights
+#     z = tf.random.uniform([num_ut], min_ut_height, max_ut_height, dtype=dtype)
+
+#     current_pos = (
+#         tf.concat([xy, tf.expand_dims(z, 1)], axis=1)
+#         if initial_ut_loc is None
+#         else initial_ut_loc
+#     )
+
+#     # Initial velocities (random direction with random speed)
+#     speeds = tf.random.uniform([num_ut], min_ut_velocity, max_ut_velocity, dtype=dtype)
+#     velocity_dirs = tf.random.normal([num_ut, 3], dtype=dtype)
+#     velocity_dirs = velocity_dirs / tf.norm(velocity_dirs, axis=1, keepdims=True)
+#     current_vel = velocity_dirs * tf.expand_dims(speeds, 1)
+
+#     # Indoor states
+#     is_indoor = tf.random.uniform([num_ut]) < indoor_probability
+
+#     for t in range(batch_size):
+#         # Store current state
+#         ut_loc = ut_loc.write(t, current_pos)
+#         ut_orientations = ut_orientations.write(
+#             t, tf.random.uniform([num_ut, 3], -np.pi, np.pi, dtype=dtype)
+#         )
+#         ut_velocities = ut_velocities.write(t, current_vel)
+#         in_state = in_state.write(t, is_indoor)
+
+#         # Update positions (Euler integration)
+#         if t < batch_size - 1:
+#             displacement = current_vel * time_between_batches
+#             new_pos = current_pos + displacement
+
+#             # Enforce distance constraints
+#             vec_to_bs = (new_pos - cell_loc).numpy()
+#             dist_to_bs = tf.norm(vec_to_bs[:, :2], axis=1).numpy()
+
+#             # Adjust positions that violate constraints
+#             too_close = dist_to_bs < min_bs_ut_dist
+#             too_far = dist_to_bs > max_bs_ut_dist
+
+#             if tf.reduce_any(too_close):
+#                 # Push away from BS
+#                 adjust_dir = vec_to_bs[too_close, :2]
+#                 adjust_dir = adjust_dir / tf.norm(adjust_dir, axis=1, keepdims=True)
+#                 new_pos_xy = cell_loc_xy + min_bs_ut_dist * adjust_dir
+#                 new_pos = tf.tensor_scatter_nd_update(
+#                     new_pos,
+#                     tf.where(too_close),
+#                     tf.concat(
+#                         [new_pos_xy, tf.expand_dims(new_pos.numpy()[too_close, 2], 1)],
+#                         axis=1,
+#                     ),
+#                 )
+
+#             if tf.reduce_any(too_far):
+#                 # Pull toward BS
+#                 adjust_dir = -vec_to_bs[too_far, :2]
+#                 adjust_dir = adjust_dir / tf.norm(adjust_dir, axis=1, keepdims=True)
+#                 new_pos_xy = cell_loc_xy + max_bs_ut_dist * adjust_dir
+#                 new_pos = tf.tensor_scatter_nd_update(
+#                     new_pos,
+#                     tf.where(too_far),
+#                     tf.concat(
+#                         [new_pos_xy, tf.expand_dims(new_pos.numpy()[too_far, 2], 1)],
+#                         axis=1,
+#                     ),
+#                 )
+
+#             # Enforce height constraints
+#             new_z = tf.clip_by_value(new_pos[:, 2], min_ut_height, max_ut_height)
+#             new_pos = tf.concat([new_pos[:, :2], tf.expand_dims(new_z, 1)], axis=1)
+
+#             current_pos = new_pos
+
+#     # Convert to dense tensors
+#     ut_loc = ut_loc.stack()
+#     ut_orientations = ut_orientations.stack()
+#     ut_velocities = ut_velocities.stack()
+#     in_state = in_state.stack()
+
+#     return ut_loc, ut_orientations, ut_velocities, in_state
+
+
 def generate_ut_trajectories(
     batch_size: int,
     num_ut: int,
@@ -81,31 +222,15 @@ def generate_ut_trajectories(
     time_between_batches: float,
     precision: str = "float32",
     initial_ut_loc: np.ndarray = None,
+    direction_change_prob: float = 0.2,
 ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
     """
-    Generate UT trajectories across multiple batches with specified constraints.
+    Generate UT trajectories with realistic boundary handling and periodic direction changes.
 
     Args:
-        batch_size: Number of batches (time steps)
-        num_ut: Number of UTs
-        cell_loc_xy: BS location [x, y] (meters)
-        min_bs_ut_dist: Minimum distance from BS (meters)
-        max_bs_ut_dist: Maximum distance from BS (meters)
-        min_ut_height: Minimum UT height (meters)
-        max_ut_height: Maximum UT height (meters)
-        indoor_probability: Probability of UT being indoor [0,1]
-        min_ut_velocity: Minimum UT velocity (m/s)
-        max_ut_velocity: Maximum UT velocity (m/s)
-        time_between_batches: Time between batches (seconds)
-        precision: Numerical precision ('float32' or 'float64')
-
-    Returns:
-        ut_loc: UT locations [batch_size, num_ut, 3] (x,y,z)
-        ut_orientations: UT orientations [batch_size, num_ut, 3] (yaw,pitch,roll)
-        ut_velocities: UT velocities [batch_size, num_ut, 3] (vx,vy,vz)
-        in_state: Indoor state [batch_size, num_ut] (bool)
+        direction_change_prob: Probability (0-1) of changing direction each time step
+        ... (other params same as before)
     """
-    # Convert inputs to tensor with specified precision
     dtype = tf.float32 if precision == "float32" else tf.float64
     cell_loc = tf.constant([cell_loc_xy[0], cell_loc_xy[1], 0.0], dtype=dtype)
 
@@ -116,25 +241,21 @@ def generate_ut_trajectories(
     in_state = tf.TensorArray(tf.bool, size=batch_size)
 
     # Generate initial positions
-    angles = tf.random.uniform([num_ut], 0, 2 * np.pi, dtype=dtype)
-    distances = tf.random.uniform([num_ut], min_bs_ut_dist, max_bs_ut_dist, dtype=dtype)
+    if initial_ut_loc is None:
+        angles = tf.random.uniform([num_ut], 0, 2 * np.pi, dtype=dtype)
+        distances = tf.random.uniform(
+            [num_ut], min_bs_ut_dist, max_bs_ut_dist, dtype=dtype
+        )
+        xy = (
+            tf.stack([distances * tf.cos(angles), distances * tf.sin(angles)], axis=1)
+            + cell_loc_xy
+        )
+        z = tf.random.uniform([num_ut], min_ut_height, max_ut_height, dtype=dtype)
+        current_pos = tf.concat([xy, tf.expand_dims(z, 1)], axis=1)
+    else:
+        current_pos = tf.convert_to_tensor(initial_ut_loc, dtype=dtype)
 
-    # Initial positions (x,y)
-    xy = (
-        tf.stack([distances * tf.cos(angles), distances * tf.sin(angles)], axis=1)
-        + cell_loc_xy
-    )
-
-    # Initial heights
-    z = tf.random.uniform([num_ut], min_ut_height, max_ut_height, dtype=dtype)
-
-    current_pos = (
-        tf.concat([xy, tf.expand_dims(z, 1)], axis=1)
-        if initial_ut_loc is None
-        else initial_ut_loc
-    )
-
-    # Initial velocities (random direction with random speed)
+    # Initial velocities
     speeds = tf.random.uniform([num_ut], min_ut_velocity, max_ut_velocity, dtype=dtype)
     velocity_dirs = tf.random.normal([num_ut, 3], dtype=dtype)
     velocity_dirs = velocity_dirs / tf.norm(velocity_dirs, axis=1, keepdims=True)
@@ -152,44 +273,81 @@ def generate_ut_trajectories(
         ut_velocities = ut_velocities.write(t, current_vel)
         in_state = in_state.write(t, is_indoor)
 
-        # Update positions (Euler integration)
         if t < batch_size - 1:
+            # Random direction changes
+            change_dir = tf.random.uniform([num_ut]) < direction_change_prob
+            if tf.reduce_any(change_dir):
+                num_changing = tf.reduce_sum(tf.cast(change_dir, tf.int32))
+                new_dirs = tf.random.normal(
+                    [num_changing, 3], dtype=dtype
+                )  # Fixed parenthesis here
+                new_dirs = new_dirs / tf.norm(new_dirs, axis=1, keepdims=True)
+                current_vel = tf.tensor_scatter_nd_update(
+                    current_vel,
+                    tf.where(change_dir),
+                    new_dirs
+                    * tf.expand_dims(tf.gather(speeds, tf.where(change_dir)[:, 0]), 1),
+                )
+
+            # Update positions
             displacement = current_vel * time_between_batches
             new_pos = current_pos + displacement
 
-            # Enforce distance constraints
-            vec_to_bs = (new_pos - cell_loc).numpy()
-            dist_to_bs = tf.norm(vec_to_bs[:, :2], axis=1).numpy()
-
-            # Adjust positions that violate constraints
+            # Enforce distance constraints with bounce physics
+            vec_to_bs = new_pos - cell_loc
+            dist_to_bs = tf.norm(vec_to_bs[:, :2], axis=1)
             too_close = dist_to_bs < min_bs_ut_dist
             too_far = dist_to_bs > max_bs_ut_dist
 
-            if tf.reduce_any(too_close):
-                # Push away from BS
-                adjust_dir = vec_to_bs[too_close, :2]
-                adjust_dir = adjust_dir / tf.norm(adjust_dir, axis=1, keepdims=True)
-                new_pos_xy = cell_loc_xy + min_bs_ut_dist * adjust_dir
+            # Handle boundary violations
+            if tf.reduce_any(too_close) or tf.reduce_any(too_far):
+                violating = too_close | too_far
+                violating_pos = tf.gather(new_pos, tf.where(violating)[:, 0])
+                violating_vel = tf.gather(current_vel, tf.where(violating)[:, 0])
+                vec_to_bs_violating = violating_pos[:, :2] - cell_loc_xy
+
+                # Calculate surface normal and bounce direction
+                normals = vec_to_bs_violating / tf.norm(
+                    vec_to_bs_violating, axis=1, keepdims=True
+                )
+                vel_parallel = (
+                    tf.reduce_sum(violating_vel[:, :2] * normals, axis=1, keepdims=True)
+                    * normals
+                )
+                vel_perpendicular = violating_vel[:, :2] - vel_parallel
+
+                # New velocity after bounce (with 80% energy retention)
+                new_vel_xy = -vel_parallel * 0.8 + vel_perpendicular
+
+                # Adjust position to boundary
+                target_dist = tf.where(
+                    tf.gather(too_close, tf.where(violating)[:, 0]),
+                    min_bs_ut_dist,
+                    max_bs_ut_dist,
+                )
+                new_pos_xy = (
+                    cell_loc_xy
+                    + (
+                        vec_to_bs_violating
+                        / tf.norm(vec_to_bs_violating, axis=1, keepdims=True)
+                    )
+                    * target_dist
+                )
+
+                # Update both position and velocity
                 new_pos = tf.tensor_scatter_nd_update(
                     new_pos,
-                    tf.where(too_close),
+                    tf.where(violating),
                     tf.concat(
-                        [new_pos_xy, tf.expand_dims(new_pos.numpy()[too_close, 2], 1)],
-                        axis=1,
+                        [new_pos_xy, tf.expand_dims(violating_pos[:, 2], 1)], axis=1
                     ),
                 )
 
-            if tf.reduce_any(too_far):
-                # Pull toward BS
-                adjust_dir = -vec_to_bs[too_far, :2]
-                adjust_dir = adjust_dir / tf.norm(adjust_dir, axis=1, keepdims=True)
-                new_pos_xy = cell_loc_xy + max_bs_ut_dist * adjust_dir
-                new_pos = tf.tensor_scatter_nd_update(
-                    new_pos,
-                    tf.where(too_far),
+                current_vel = tf.tensor_scatter_nd_update(
+                    current_vel,
+                    tf.where(violating),
                     tf.concat(
-                        [new_pos_xy, tf.expand_dims(new_pos.numpy()[too_far, 2], 1)],
-                        axis=1,
+                        [new_vel_xy, tf.expand_dims(violating_vel[:, 2], 1)], axis=1
                     ),
                 )
 
@@ -199,13 +357,12 @@ def generate_ut_trajectories(
 
             current_pos = new_pos
 
-    # Convert to dense tensors
-    ut_loc = ut_loc.stack()
-    ut_orientations = ut_orientations.stack()
-    ut_velocities = ut_velocities.stack()
-    in_state = in_state.stack()
-
-    return ut_loc, ut_orientations, ut_velocities, in_state
+    return (
+        ut_loc.stack(),
+        ut_orientations.stack(),
+        ut_velocities.stack(),
+        in_state.stack(),
+    )
 
 
 def plot_ut_trajectories(
