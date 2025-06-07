@@ -1,5 +1,5 @@
 import tensorflow as tf
-from sionna.phy import PI, config, dtypes, channel
+from sionna.phy import PI, config, dtypes
 import numpy as np
 from typing import Tuple
 import matplotlib.pyplot as plt
@@ -10,9 +10,8 @@ import numpy as np
 def gen_custom_topology(
     batch_size,
     num_ut,
-    scenario,
-    min_bs_ut_dist=None,
-    isd=None,
+    min_bs_ut_dis=None,
+    max_bs_ut_dis=None,
     bs_height=None,
     min_ut_height=None,
     max_ut_height=None,
@@ -20,31 +19,9 @@ def gen_custom_topology(
     min_ut_velocity=None,
     max_ut_velocity=None,
     precision=None,
+    time_between_batches=1e-3,
+    initial_ut_loc=None,
 ):
-
-    params = channel.utils.set_3gpp_scenario_parameters(
-        scenario,
-        min_bs_ut_dist,
-        isd,
-        bs_height,
-        min_ut_height,
-        max_ut_height,
-        indoor_probability,
-        min_ut_velocity,
-        max_ut_velocity,
-        precision=precision,
-    )
-    (
-        min_bs_ut_dist,
-        isd,
-        bs_height,
-        min_ut_height,
-        max_ut_height,
-        indoor_probability,
-        min_ut_velocity,
-        max_ut_velocity,
-    ) = params
-
     if precision is None:
         rdtype = config.tf_rdtype
     else:
@@ -70,29 +47,20 @@ def gen_custom_topology(
         ],
         axis=-1,
     )
-    # Generating the UTs
-    time_between_batches = 10.0  # seconds TODO
-    max_bs_ut_dist = isd  # TODO
-    min_bs_ut_dist = 100.0  # TODO
-    max_bs_ut_dist = 300.0
-    min_ut_height = 1.5
-    max_ut_height = 1.5
-    indoor_probability = 0.0  # TODO
-    min_ut_velocity = 5.0  # m/s
-    max_ut_velocity = 5.0  # m/s
 
     ut_topology = generate_ut_trajectories(
         batch_size,
         num_ut,
         np.zeros([2]),
-        min_bs_ut_dist,
-        max_bs_ut_dist,
-        min_ut_height,
-        max_ut_height,
+        min_bs_ut_dis.numpy(),
+        max_bs_ut_dis.numpy(),
+        min_ut_height.numpy(),
+        max_ut_height.numpy(),
         indoor_probability,
         min_ut_velocity,
         max_ut_velocity,
         time_between_batches,
+        initial_ut_loc=initial_ut_loc,
     )
     ut_loc, ut_orientations, ut_velocities, in_state = ut_topology
 
@@ -112,6 +80,7 @@ def generate_ut_trajectories(
     max_ut_velocity: float,
     time_between_batches: float,
     precision: str = "float32",
+    initial_ut_loc: np.ndarray = None,
 ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
     """
     Generate UT trajectories across multiple batches with specified constraints.
@@ -159,7 +128,11 @@ def generate_ut_trajectories(
     # Initial heights
     z = tf.random.uniform([num_ut], min_ut_height, max_ut_height, dtype=dtype)
 
-    current_pos = tf.concat([xy, tf.expand_dims(z, 1)], axis=1)
+    current_pos = (
+        tf.concat([xy, tf.expand_dims(z, 1)], axis=1)
+        if initial_ut_loc is None
+        else initial_ut_loc
+    )
 
     # Initial velocities (random direction with random speed)
     speeds = tf.random.uniform([num_ut], min_ut_velocity, max_ut_velocity, dtype=dtype)

@@ -10,21 +10,15 @@ import numpy as np
 import tensorflow as tf
 import sionna
 import csv
-from sionna.phy.mimo import StreamManagement
-from sionna.phy.ofdm import (
-    ResourceGrid,
-)
 from sionna.phy.channel.tr38901 import UMa, PanelArray
-from sionna.phy.channel import (
-    subcarrier_frequencies,
-    cir_to_ofdm_channel,
-)
+from sionna.phy.channel import subcarrier_frequencies, cir_to_ofdm_channel, utils
 from utils import gen_custom_topology, plot_ut_trajectories
 
 
 sionna.phy.config.seed = 40
-plot_ue_se = False  # Plot UE SE per RB for the first batch and num_time_steps element
-write_to_file = True  # Write the results to a file
+plot_ut_se = False  # Plot ut SE per RB for the first batch and num_time_steps element
+write_to_file = False  # Write the results to a file
+plot_all_ut_trajectories = True  # Plot the trajectories of the uts
 num_ut = 2
 num_bs = 1
 num_bs_ant = 16  # Must be a perfect square
@@ -42,12 +36,40 @@ n0 = 1e-9  # Noise power spectral density
 batch_size = 10
 time_steps_per_batch = 1
 num_episodes = 5  # Number of episodes to simulate (each episode contains bath_size*time_steps_per_batch time steps)
-ues_velocity = 5  # m/s
+uts_min_velocity = 5  # m/s
+uts_max_velocity = 5  # m/s
 num_streams_per_tx = num_ut_ant
-min_bs_ut_dis = 100  # Meters
-max_bs_ut_dis = 300  # Meters
-bs_height = 25.0  # Meters
+min_bs_ut_dis = None  # Meters (None to use the default UMA values)
+max_bs_ut_dis = None  # Meters (None to use the default UMA values)
+bs_height = None  # Meters (None to use the default UMA values)
+min_ut_height = None  # Meters (None to use the default UMA values)
+max_ut_height = None  # Meters (None to use the default UMA values)
+ut_indoor_probability = (
+    0.0  # Probability of the UT being indoors (0.0 for outdoor only)
+)
 rx_tx_association = np.ones((num_bs, num_ut))
+
+# Generate parameters according to UMa scenario
+(
+    min_bs_ut_dis,
+    max_bs_ut_dis,
+    bs_height,
+    min_ut_height,
+    max_ut_height,
+    indoor_probability,
+    min_ut_velocity,
+    max_ut_velocity,
+) = utils.set_3gpp_scenario_parameters(
+    "uma",
+    min_bs_ut_dis,
+    max_bs_ut_dis,
+    bs_height,
+    min_ut_height,
+    max_ut_height,
+    ut_indoor_probability,
+    uts_min_velocity,
+    uts_max_velocity,
+)
 
 bs_array = PanelArray(
     num_rows_per_panel=int(np.sqrt(num_bs_ant)),
@@ -75,39 +97,46 @@ channel_model = UMa(
     direction="downlink",
 )
 topology = None  # Initialize topology variable
-all_uts_pos = []
-all_uts_indoor = []
+all_uts_pos = tf.zeros([0, num_ut, 3], dtype=tf.float32)
+all_uts_indoor = tf.zeros([0, num_ut], dtype=tf.bool)
 for episode in range(num_episodes):
     if topology is None:
         # Set topology in the first iteration
         topology = gen_custom_topology(
-            batch_size=batch_size,
-            num_ut=num_ut,
-            scenario="uma",
-            min_ut_velocity=ues_velocity,
-            max_ut_velocity=ues_velocity,
-            indoor_probability=0.0,
+            batch_size,
+            num_ut,
+            min_bs_ut_dis=min_bs_ut_dis,
+            max_bs_ut_dis=max_bs_ut_dis,
+            bs_height=bs_height,
+            min_ut_height=min_ut_height,
+            max_ut_height=max_ut_height,
+            indoor_probability=ut_indoor_probability,
+            min_ut_velocity=uts_min_velocity,
+            max_ut_velocity=uts_max_velocity,
+            precision=None,
+            time_between_batches=10,  # TODO
         )
     else:
-        # Update topology in subsequent iterations
+        # Update topology in subsequent iterations TODO
         initial_pos_uts = topology[0][-1]
         topology = gen_custom_topology(
-            batch_size=batch_size,
-            num_ut=num_ut,
-            scenario="uma",
-            min_ut_velocity=ues_velocity,
-            max_ut_velocity=ues_velocity,
-            indoor_probability=0.0,
+            batch_size,
+            num_ut,
+            min_bs_ut_dis=min_bs_ut_dis,
+            max_bs_ut_dis=max_bs_ut_dis,
+            bs_height=bs_height,
+            min_ut_height=min_ut_height,
+            max_ut_height=max_ut_height,
+            indoor_probability=ut_indoor_probability,
+            min_ut_velocity=uts_min_velocity,
+            max_ut_velocity=uts_max_velocity,
+            precision=None,
+            time_between_batches=10,  # TODO
+            initial_ut_loc=initial_pos_uts,
         )
-        curr_pos_uts_first = topology[0][-1]
-        # Update only the UT positions in the topology tuple
-        updated_ut_positions = topology[0] - curr_pos_uts_first + initial_pos_uts
-        topology_list = list(topology)
-        topology_list[0] = updated_ut_positions
-        topology = tuple(topology_list)
     channel_model.set_topology(*topology)
-    all_uts_pos.append(topology[0])
-    all_uts_indoor.append(topology[5])
+    all_uts_pos = tf.concat([all_uts_pos, topology[0]], axis=0)
+    all_uts_indoor = tf.concat([all_uts_indoor, topology[5]], axis=0)
     a, tau, *_ = channel_model(
         num_time_samples=time_steps_per_batch,
         sampling_frequency=subcarrier_spacing,
@@ -150,26 +179,34 @@ for episode in range(num_episodes):
     )
     avg_se_rb = np.log2(1 + avg_snr_rb)
 
-    if plot_ue_se:  # Plot UE SE per RB for the first batch and num_time_steps element
+    if plot_ut_se:  # Plot ut SE per RB for the first batch and num_time_steps element
         plt.figure()
-        for ue in range(num_ut):
-            plt.plot(avg_se_rb[0, ue, 0, 0, 0, :], label=f"UE {ue+1}")
+        for ut in range(num_ut):
+            plt.plot(avg_se_rb[0, ut, 0, 0, 0, :], label=f"ut {ut+1}")
         plt.grid()
         plt.legend()
         plt.show()
         print(
-            f"Average achievable throughput per UE (Mbps): {np.mean(avg_se_rb[0, :, 0, 0, 0, :], axis=-1) * subcarriers_per_rb * number_rbs * subcarrier_spacing / 1e6}"
+            f"Average achievable throughput per ut (Mbps): {np.mean(avg_se_rb[0, :, 0, 0, 0, :], axis=-1) * subcarriers_per_rb * number_rbs * subcarrier_spacing / 1e6}"
         )
     if write_to_file:  # Write the results to a file
         file_mode = "w" if episode == 0 else "a"
-        for ue in range(num_ut):
-            with open(f"channel_files/ue_{ue+1}_se.csv", file_mode) as file:
+        for ut in range(num_ut):
+            with open(f"channel_files/ut_{ut+1}_se.csv", file_mode) as file:
                 for batch_idx in range(batch_size):
                     for time_step in range(time_steps_per_batch):
                         writer = csv.writer(file)
                         writer.writerow(
-                            avg_se_rb[batch_idx, ue, 0, 0, time_step, :]
+                            avg_se_rb[batch_idx, ut, 0, 0, time_step, :]
                         )  # Write the entire list as a single row
-plot_ut_trajectories(
-    all_uts_pos, all_uts_indoor, np.zeros(2), bs_height, min_bs_ut_dis, max_bs_ut_dis
-)
+
+if plot_all_ut_trajectories:  # Plot the trajectories of the uts
+    plot_ut_trajectories(
+        all_uts_pos,
+        all_uts_indoor,
+        np.zeros(2),
+        bs_height,
+        min_bs_ut_dis,
+        max_bs_ut_dis,
+    )
+print("Simulation completed successfully.")
