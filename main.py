@@ -10,6 +10,7 @@ import numpy as np
 import tensorflow as tf
 import sionna
 import csv
+from tqdm import tqdm
 from sionna.phy.channel.tr38901 import UMa, PanelArray
 from sionna.phy.channel import subcarrier_frequencies, cir_to_ofdm_channel, utils
 from utils import gen_custom_topology, plot_ut_trajectories
@@ -17,8 +18,8 @@ from utils import gen_custom_topology, plot_ut_trajectories
 
 sionna.phy.config.seed = 40
 plot_ut_se = False  # Plot ut SE per RB for the first batch and num_time_steps element
-write_to_file = False  # Write the results to a file
-plot_all_ut_trajectories = True  # Plot the trajectories of the uts
+write_to_file = True  # Write the results to a file
+plot_all_ut_trajectories = False  # Plot the trajectories of the uts
 num_ut = 2
 num_bs = 1
 num_bs_ant = 16  # Must be a perfect square
@@ -35,7 +36,7 @@ p_tx = 40.0  # Watts
 n0 = 1e-9  # Noise power spectral density
 batch_size = 10
 time_steps_per_batch = 1
-num_episodes = 5  # Number of episodes to simulate (each episode contains bath_size*time_steps_per_batch time steps)
+num_episodes = 100  # Number of episodes to simulate (each episode contains bath_size*time_steps_per_batch time steps)
 uts_min_velocity = 5  # m/s
 uts_max_velocity = 5  # m/s
 num_streams_per_tx = num_ut_ant
@@ -99,7 +100,7 @@ channel_model = UMa(
 topology = None  # Initialize topology variable
 all_uts_pos = tf.zeros([0, num_ut, 3], dtype=tf.float32)
 all_uts_indoor = tf.zeros([0, num_ut], dtype=tf.bool)
-for episode in range(num_episodes):
+for episode in tqdm(range(num_episodes), desc="Simulating episodes"):
     if topology is None:
         # Set topology in the first iteration
         topology = gen_custom_topology(
@@ -114,10 +115,10 @@ for episode in range(num_episodes):
             min_ut_velocity=uts_min_velocity,
             max_ut_velocity=uts_max_velocity,
             precision=None,
-            time_between_batches=10,  # TODO
+            time_between_batch_samples=num_ofdm_symbols / subcarrier_spacing,
         )
     else:
-        # Update topology in subsequent iterations TODO
+        # Update topology in subsequent iterations
         initial_pos_uts = topology[0][-1]
         topology = gen_custom_topology(
             batch_size,
@@ -131,7 +132,7 @@ for episode in range(num_episodes):
             min_ut_velocity=uts_min_velocity,
             max_ut_velocity=uts_max_velocity,
             precision=None,
-            time_between_batches=10,  # TODO
+            time_between_batch_samples=num_ofdm_symbols / subcarrier_spacing,
             initial_ut_loc=initial_pos_uts,
         )
     channel_model.set_topology(*topology)
