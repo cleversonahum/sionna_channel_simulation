@@ -36,7 +36,7 @@ p_tx = 40.0  # Watts
 n0 = 1e-9  # Noise power spectral density
 batch_size = 10
 time_steps_per_batch = 1
-num_episodes = 100  # Number of episodes to simulate (each episode contains bath_size*time_steps_per_batch time steps)
+num_episodes = 10  # Number of episodes to simulate (each episode contains bath_size*time_steps_per_batch time steps)
 uts_min_velocity = 5  # m/s
 uts_max_velocity = 5  # m/s
 num_streams_per_tx = num_ut_ant
@@ -209,5 +209,15 @@ if plot_all_ut_trajectories:  # Plot the trajectories of the uts
         bs_height,
         min_bs_ut_dis,
         max_bs_ut_dis,
+    )
+if write_to_file:
+    np.savez(
+        "channel_files/uts_pos.npz",
+        all_uts_pos=all_uts_pos.numpy(),
+        all_uts_indoor=all_uts_indoor.numpy(),
+        min_bs_ut_dis=min_bs_ut_dis,
+        max_bs_ut_dis=max_bs_ut_dis,
+        bs_height=bs_height,
+        bs_position=np.zeros(2),
     )
 print("Simulation completed successfully.")
